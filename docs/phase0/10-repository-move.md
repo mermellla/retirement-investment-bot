@@ -1,4 +1,10 @@
-# Repository move (OI-13)
+# Repository move (OI-13) — canonical repository: `mermellla/retirement-investment-bot` (public, MIT)
+
+**Status 2026-09-17:** the clean history below was pushed to `github.com/mermellla/retirement-investment-bot` on top of the
+owner's initial commit (LICENSE, README) and the full suite was run there. That repository is canonical from this point;
+the `agency-agents` branches are historical. Because the repository is public: secrets stay in Railway/Claude environment
+variables only (the lockout test scans for secret-shaped literals), no owner contact details are hard-coded
+(`EDGAR_USER_AGENT` is required from the environment), and the Python package keeps its internal name `tradeagent`.
 
 The Phase 0 package was rebuilt as a standalone repository with **fresh history** — no fork history, no persona files,
 no unrelated CI or license — and re-verified there.

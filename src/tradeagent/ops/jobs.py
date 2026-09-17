@@ -61,7 +61,10 @@ def build_runner(
     registry.register("bars_quotes", sip.health, iex.health if iex is not sip else None, required_for_entries=True)
     news = AlpacaNews(client)
     registry.register("news", news.health)
-    edgar = EdgarClient(env.get("EDGAR_USER_AGENT", "tradeagent (owner contact required) ellen.kimble@gmail.com"))
+    ua = env.get("EDGAR_USER_AGENT")
+    if not ua:
+        raise RuntimeError("EDGAR_USER_AGENT is required (SEC fair-access policy: app name plus a contact email); set it in the environment")
+    edgar = EdgarClient(ua)
     registry.register("filings", edgar.health)
     finnhub = FinnhubEarnings(env.get("FINNHUB_API_KEY"))
     registry.register("earnings_calendar", finnhub.health)

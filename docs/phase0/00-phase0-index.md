@@ -36,8 +36,8 @@ Boot and ledger spine: `tradeagent boot-check | run | verify-projections` (`src/
 
 ## Owner review round 1 (2026-09-13)
 Accepted amendments are logged in `docs/spec/AMENDMENTS.md` (A-01…A-06). Decisions still requested are in
-`09-owner-decisions.md` (SIC mapping, denylist review, defaults table, schema-rent audit). The clean-repository move is
-described in `10-repository-move.md`.
+`09-owner-decisions.md` (SIC mapping, denylist review, defaults table, schema-rent audit). The canonical repository is
+`mermellla/retirement-investment-bot` (public, MIT); see `10-repository-move.md`.
 
 ## Status of the verification work
 18 external assumptions were checked against current documentation on 2026-09-13 (`08-api-verification-log.md`).
