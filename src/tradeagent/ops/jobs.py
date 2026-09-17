@@ -63,7 +63,9 @@ def build_runner(
     registry.register("news", news.health)
     ua = env.get("EDGAR_USER_AGENT")
     if not ua:
-        raise RuntimeError("EDGAR_USER_AGENT is required (SEC fair-access policy: app name plus a contact email); set it in the environment")
+        raise RuntimeError(
+            "EDGAR_USER_AGENT is required (SEC fair-access policy: app name plus a contact email); set it in the environment"
+        )
     edgar = EdgarClient(ua)
     registry.register("filings", edgar.health)
     finnhub = FinnhubEarnings(env.get("FINNHUB_API_KEY"))
