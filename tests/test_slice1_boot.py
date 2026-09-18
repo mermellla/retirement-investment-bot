@@ -7,11 +7,11 @@ import uuid
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
 
 import pytest
 import yaml
 
+from tests.fakes import FakeBroker
 from tradeagent.config import load_settings
 from tradeagent.domain.enums import ExecutionMode
 from tradeagent.domain.models import Position
@@ -50,18 +50,11 @@ def settings_from(workdir: Path):
     return load_settings(workdir / "config", env={})
 
 
-class FlatBroker:
+class FlatBroker(FakeBroker):
+    """Slice 1 boot tests run in DRY_RUN: the null-broker posture (observe only, nothing at the broker)."""
+
     mode = ExecutionMode.DRY_RUN
     observe_only = True
-
-    def __init__(self, positions: list[Position] | None = None):
-        self._positions = positions or []
-
-    async def positions(self) -> list[Position]:
-        return self._positions
-
-    async def open_orders(self) -> list[Any]:
-        return []
 
 
 def do_boot(dbx: Database, workdir: Path, name: str, code_version: str = "sha-1"):
@@ -177,7 +170,7 @@ def test_unknown_broker_position_halts(dbx, workdir):
             code_version="sha-1",
             today=date(2026, 9, 14),
         )  # type: ignore[arg-type]
-    assert exc.value.code == "RECONCILE_HALT" and exc.value.detail["broker_positions"][0]["symbol"] == "TSLA"
+    assert exc.value.code == "RECONCILE_HALT" and exc.value.detail["unexplained"][0]["symbol"] == "TSLA"
     rec = dbx.conn.execute("select result from reconciliations order by ran_at desc limit 1").fetchone()
     assert rec["result"] == "halt"
 

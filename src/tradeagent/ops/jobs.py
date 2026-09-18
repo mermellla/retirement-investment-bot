@@ -142,3 +142,63 @@ def register_scan_jobs(scheduler: Scheduler, runner: ScanRunner) -> None:
 
     scheduler.register("preopen_scan", preopen)
     scheduler.register("intraday_scan", partial(intraday))
+
+
+def register_execution_jobs(
+    scheduler: Scheduler,
+    db: Database,
+    broker: Any,
+    client: AlpacaClient,
+    iex: Any,
+    experiment_id: UUID,
+    phase_id: UUID,
+    sip: Any,
+) -> None:
+    """Slice 3: corporate actions → stop re-arm → post-open verification (ADR-0013 sequence)."""
+    from datetime import timedelta
+
+    from tradeagent.adapters.alpaca.corporate_actions import AlpacaCorporateActions
+    from tradeagent.execution.corporate import apply_corporate_actions
+    from tradeagent.execution.stops import StopArmer
+
+    primary = db.primary_portfolio(experiment_id)
+    portfolio_id = UUID(str(primary["id"]))
+    armer = StopArmer(db, broker, experiment_id, phase_id, portfolio_id)
+    ca = AlpacaCorporateActions(client)
+
+    def symbols() -> list[str]:
+        return [p["symbol"] for p in db.open_positions(portfolio_id)]
+
+    async def corporate_actions(at: datetime) -> None:
+        syms = symbols()
+        if not syms:
+            return
+        splits, changes = ca.for_symbols(syms, at.date() - timedelta(days=7), at.date())
+        with db.transaction():
+            applied = apply_corporate_actions(db, portfolio_id, at.date(), splits, changes)
+        log.info("corporate actions applied: %s", applied)
+
+    async def stop_rearm(at: datetime) -> None:
+        syms = symbols()
+        prior: dict[str, Decimal] = {}
+        if syms:
+            end = at.astimezone(UTC) - sip.embargo
+            for b in sip.bars(syms, "1Day", end - timedelta(days=6), end):
+                prior[b.symbol] = b.close
+        with db.transaction():
+            actions = await armer.rearm(at.date(), prior)
+        log.info("stop re-arm: %s", [(a.symbol, a.action, a.broker_status) for a in actions])
+
+    async def verify(at: datetime, final: bool) -> None:
+        syms = symbols()
+        last = {s: t.price for s, t in iex.latest_trades(syms).items()} if syms else {}
+        with db.transaction():
+            actions = await armer.verify_post_open(at.date(), last, final)
+        log.info(
+            "post-open verification (final=%s): %s", final, [(a.symbol, a.action, a.broker_status) for a in actions]
+        )
+
+    scheduler.register("corporate_actions", corporate_actions)
+    scheduler.register("stop_rearm", stop_rearm)
+    scheduler.register("post_open_verify_1", partial(verify, final=False))
+    scheduler.register("post_open_verify_2", partial(verify, final=True))

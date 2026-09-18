@@ -16,8 +16,15 @@ import psycopg
 import psycopg.types.json
 from psycopg.rows import dict_row
 
-from tradeagent.domain.enums import ExecutionMode, HaltScope, PortfolioKind, ReconcileResult
-from tradeagent.domain.models import Instrument, LLMCall
+from tradeagent.domain.enums import (
+    BrokerPolicyResult,
+    ExecutionMode,
+    HaltScope,
+    OrderStatus,
+    PortfolioKind,
+    ReconcileResult,
+)
+from tradeagent.domain.models import Instrument, LLMCall, OrderRequest
 
 # YAML config carries dates; jsonb payloads serialise them as ISO strings.
 psycopg.types.json.set_json_dumps(lambda obj: json.dumps(obj, default=str, sort_keys=True))
@@ -371,3 +378,237 @@ class Database:
                 call.status,
             ),
         )
+
+    # ---- execution group — Slice 3
+    def primary_portfolio(self, experiment_id: UUID) -> dict[str, Any]:
+        row = self.conn.execute(
+            "select * from portfolios where experiment_id = %s and kind = 'llm_primary'", (experiment_id,)
+        ).fetchone()
+        assert row is not None
+        return row
+
+    def open_positions(self, portfolio_id: UUID) -> list[dict[str, Any]]:
+        return self.conn.execute(
+            "select * from positions where portfolio_id = %s and status = 'open' order by symbol", (portfolio_id,)
+        ).fetchall()
+
+    def order_by_client_id(self, client_order_id: str) -> dict[str, Any] | None:
+        return self.conn.execute("select * from orders where client_order_id = %s", (client_order_id,)).fetchone()
+
+    def order_by_broker_id(self, broker_order_id: str) -> dict[str, Any] | None:
+        return self.conn.execute("select * from orders where broker_order_id = %s", (broker_order_id,)).fetchone()
+
+    def open_broker_orders(self, portfolio_id: UUID) -> list[dict[str, Any]]:
+        return self.conn.execute(
+            "select * from orders where portfolio_id = %s and not is_simulated and status in ('SUBMITTED', 'PARTIALLY_FILLED') order by created_at",
+            (portfolio_id,),
+        ).fetchall()
+
+    def protective_orders(self, position_id: UUID) -> list[dict[str, Any]]:
+        return self.conn.execute(
+            """select * from orders where position_id = %s and purpose in ('protective_stop', 'stop_rearm', 'software_stop') and order_is_open(status) order by created_at""",
+            (position_id,),
+        ).fetchall()
+
+    def record_order(
+        self,
+        req: OrderRequest,
+        experiment_id: UUID,
+        phase_id: UUID,
+        position_id: UUID | None,
+        reserved_notional: Decimal,
+    ) -> UUID:
+        row = self.conn.execute(
+            """insert into orders (decision_id, portfolio_id, experiment_id, experiment_phase_id, position_id, client_order_id, leg_seq, purpose, symbol, side, order_type,
+               time_in_force, qty, notional, limit_price, stop_price, take_profit_price, extended_hours, is_simulated, order_eligible_at, expires_at, reserved_notional_usd)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) returning id""",
+            (
+                req.decision_id,
+                req.portfolio_id,
+                experiment_id,
+                phase_id,
+                position_id,
+                req.client_order_id,
+                req.leg_seq,
+                req.purpose.value,
+                req.symbol,
+                req.side.value,
+                req.order_type.value,
+                req.time_in_force.value,
+                req.qty,
+                req.notional,
+                req.limit_price,
+                req.stop_price,
+                req.take_profit_price,
+                req.extended_hours,
+                req.is_simulated,
+                req.order_eligible_at,
+                req.expires_at,
+                reserved_notional,
+            ),
+        ).fetchone()
+        assert row is not None
+        return UUID(str(row["id"]))
+
+    def transition_order(
+        self,
+        order_id: UUID,
+        to_status: OrderStatus,
+        reason: str,
+        broker_order_id: str | None = None,
+        submitted_at: datetime | None = None,
+    ) -> None:
+        current = self.conn.execute("select status from orders where id = %s", (order_id,)).fetchone()
+        assert current is not None
+        if current["status"] == to_status.value:
+            if broker_order_id:
+                self.conn.execute(
+                    "update orders set broker_order_id = coalesce(broker_order_id, %s) where id = %s",
+                    (broker_order_id, order_id),
+                )
+            return
+        self.conn.execute(
+            "update orders set status = %s, status_reason = %s, broker_order_id = coalesce(%s, broker_order_id), submitted_at = coalesce(%s, submitted_at) where id = %s",
+            (to_status.value, reason, broker_order_id, submitted_at, order_id),
+        )
+
+    def create_system_decision(
+        self,
+        experiment_id: UUID,
+        phase_id: UUID,
+        portfolio_id: UUID,
+        symbol: str,
+        decision: str,
+        position_id: UUID | None,
+        reason: str,
+        versions: dict[str, str],
+        at: datetime,
+    ) -> UUID:
+        row = self.conn.execute(
+            """insert into decisions (experiment_id, experiment_phase_id, portfolio_id, position_id, origin, kind, status, decision, ticker, direction, trigger_reason,
+               reason_for_exit_if_existing_position, signal_observed_at, risk_validation_completed_at, order_eligible_at,
+               prompt_version, exclusion_list_version, config_version, scanner_version, qb_rules_version)
+               values (%s, %s, %s, %s, 'system', 'system_exit', 'validated', %s, %s, 'long', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) returning decision_id""",
+            (
+                experiment_id,
+                phase_id,
+                portfolio_id,
+                position_id,
+                decision,
+                symbol,
+                reason,
+                reason,
+                at,
+                at,
+                at,
+                versions["prompt_version"],
+                versions["exclusion_list_version"],
+                versions["config_version"],
+                versions["scanner_version"],
+                versions["qb_rules_version"],
+            ),
+        ).fetchone()
+        assert row is not None
+        return UUID(str(row["decision_id"]))
+
+    def phase_versions(self, phase_id: UUID) -> dict[str, str]:
+        row = self.conn.execute(
+            "select prompt_version, exclusion_list_version, config_version, scanner_version, qb_rules_version from experiment_phases where id = %s",
+            (phase_id,),
+        ).fetchone()
+        assert row is not None
+        return {k: str(v) for k, v in row.items()}
+
+    def record_stop_coverage(
+        self, session_date: date, position_id: UUID, lot_id: UUID | None, order_id: UUID | None, **fields: Any
+    ) -> None:
+        cols = {
+            "session_date": session_date,
+            "position_id": position_id,
+            "lot_id": lot_id,
+            "order_id": order_id,
+            **fields,
+        }
+        keys = list(cols)
+        updates = ", ".join(f"{k} = excluded.{k}" for k in keys if k not in ("session_date", "position_id"))
+        self.conn.execute(
+            f"insert into stop_coverage ({', '.join(keys)}) values ({', '.join(['%s'] * len(keys))}) on conflict (session_date, position_id) do update set {updates}",  # noqa: S608
+            [cols[k] for k in keys],
+        )
+
+    def record_broker_policy_check(
+        self,
+        experiment_id: UUID | None,
+        mode: ExecutionMode,
+        expected: dict[str, Any],
+        before: dict[str, Any] | None,
+        after: dict[str, Any] | None,
+        result: BrokerPolicyResult,
+    ) -> None:
+        self.conn.execute(
+            "insert into broker_policy_checks (experiment_id, execution_mode, expected, observed_before, observed_after, result) values (%s, %s, %s, %s, %s, %s)",
+            (
+                experiment_id,
+                mode.value,
+                psycopg.types.json.Jsonb(expected),
+                psycopg.types.json.Jsonb(before) if before is not None else None,
+                psycopg.types.json.Jsonb(after) if after is not None else None,
+                result.value,
+            ),
+        )
+
+    def last_reconciled_event_at(self, experiment_id: UUID) -> datetime | None:
+        row = self.conn.execute(
+            "select max(last_reconciled_event_at) as t from reconciliations where experiment_id = %s and result in ('agree', 'repaired')",
+            (experiment_id,),
+        ).fetchone()
+        return row["t"] if row else None
+
+    def record_reconciliation_full(
+        self,
+        experiment_id: UUID,
+        mode: ExecutionMode,
+        result: ReconcileResult,
+        diff: dict[str, Any],
+        notes: str,
+        replayed: int,
+        last_event_at: datetime | None,
+    ) -> None:
+        self.conn.execute(
+            "insert into reconciliations (experiment_id, execution_mode, result, events_replayed, last_reconciled_event_at, diff, notes) values (%s, %s, %s, %s, %s, %s, %s)",
+            (experiment_id, mode.value, result.value, replayed, last_event_at, psycopg.types.json.Jsonb(diff), notes),
+        )
+
+    def apply_split(self, position_id: UUID, ratio: Decimal, at: datetime, reason: str) -> None:
+        pos = self.conn.execute("select * from positions where id = %s", (position_id,)).fetchone()
+        assert pos is not None
+        inv = Decimal(1) / ratio
+        self.conn.execute(
+            """update positions set qty = qty * %s, avg_cost = avg_cost * %s, working_target_price = working_target_price * %s,
+               working_invalidation_price = working_invalidation_price * %s, is_fractional = ((qty * %s) <> trunc(qty * %s)) where id = %s""",
+            (ratio, inv, inv, inv, ratio, ratio, position_id),
+        )
+        for lot in self.conn.execute(
+            "select * from lots where position_id = %s and qty_remaining > 0", (position_id,)
+        ).fetchall():
+            new_rem = Decimal(lot["qty_remaining"]) * ratio
+            self.conn.execute(
+                "update lots set qty_remaining = %s, cost_basis = cost_basis * %s, is_fractional = %s where id = %s",
+                (new_rem, inv, new_rem != new_rem.to_integral_value(), lot["id"]),
+            )
+            self.conn.execute(
+                "insert into lot_events (lot_id, at, kind, qty_delta, reason) values (%s, %s, 'split_adjust', %s, %s)",
+                (lot["id"], at, new_rem - Decimal(lot["qty_remaining"]), reason),
+            )
+
+    def change_symbol(self, position_id: UUID, new_symbol: str, at: datetime) -> None:
+        self.conn.execute(
+            "insert into instruments (symbol, tradable, fractionable, universe_status, status_reason) values (%s, true, true, 'excluded_universe', 'symbol change; re-evaluated next universe build') on conflict do nothing",
+            (new_symbol,),
+        )
+        self.conn.execute("update positions set symbol = %s where id = %s", (new_symbol, position_id))
+        for lot in self.conn.execute("select id from lots where position_id = %s", (position_id,)).fetchall():
+            self.conn.execute(
+                "insert into lot_events (lot_id, at, kind, qty_delta, reason) values (%s, %s, 'symbol_change', 0, %s)",
+                (lot["id"], at, f"to {new_symbol}"),
+            )

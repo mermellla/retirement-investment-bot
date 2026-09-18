@@ -4,7 +4,8 @@ Experimental short-term trading agent — Specification v2.3 (`docs/spec/SPEC-v2
 portfolio manager over 15-minute-delayed consolidated data with $500 of virtual capital in a 1x, long-only paper account;
 the product is the dataset that answers whether it beats cash, SPY, VTI, and a deterministic baseline net of all costs.
 
-Status: Phase 0 package plus Slices 1–2 (boot spine; universe and scanner with Jev-judged catalysts). Modes buildable:
+Status: Phase 0 package plus Slices 1–3 (boot spine; universe and scanner with Jev-judged catalysts; paper broker
+gateway with policy enforcement, replay-or-halt reconciliation, and stop re-arm). Modes buildable:
 DRY_RUN, PAPER. LIVE is architected but locked out at every layer (ADR-0020). No credentials live in this repository;
 secrets are environment variables only (Railway in deployment).
 

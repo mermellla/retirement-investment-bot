@@ -14,7 +14,8 @@ tradeagent/
   persistence/       db.py                          psycopg Database over the schema; cash-chain verify             S1 ✔
   adapters/
     alpaca/          market_data.py ✔ (SIP_DELAYED, IEX_REALTIME, SIP_REALTIME), assets.py ✔, news.py ✔, client.py ✔,
-                     calendar.py ✔, broker_null.py ✔, stream.py, broker_paper.py, corporate_actions.py, activities.py   S2 ✔ / S3
+                     calendar.py ✔, broker_null.py ✔, broker_paper.py ✔ (orders, positions, activities, account
+                     configuration), corporate_actions.py ✔, stream.py                                        S2/S3 ✔ / S6
     edgar/           client.py ✔ (tickers, submissions, fair-access throttle), filings.py, xbrl.py                S2 ✔ / S5
     finnhub/         earnings.py ✔                                                                            S2 ✔
     typesafe/        jev.py ✔, questions.py ✔ (ADR-0023 judgment engine)                                       S2 ✔
@@ -26,8 +27,9 @@ tradeagent/
   agent/             dossier.py, prompts/ (versioned files), llm_client.py, triage.py, decide.py, critique.py,
                      reviews.py                                                                                S5/S6
   risk/              desk.py (§8.1 order), sizing.py, budget.py, guards.py                                    S4
-  execution/         orders.py (state machine client), executor.py, stops.py (ADR-0013), ext_hours.py,
-                     reconstruction.py (ADR-0017 fill model), reconcile.py (§8.6), broker_policy.py (§8.10)    S3/S4/S6
+  execution/         broker_policy.py ✔ (§8.10), reconcile.py ✔ (§8.6), ledger_apply.py ✔ (fill → position → lots →
+                     fees → cash), stops.py ✔ (ADR-0013), corporate.py ✔, broker_factory.py ✔; orders.py (state
+                     machine client), executor.py, ext_hours.py, reconstruction.py (ADR-0017 fill model)      S3 ✔ / S4/S6
   portfolios/        primary.py, quant_baseline.py (QB-1.0), benchmarks.py, critique_shadow.py (ADR-0018),
                      deterministic_exit_shadow.py                                                              S4/S6
   analytics/         forecast_resolution.py (ADR-0017), candidate_outcomes.py, closed_trades.py,

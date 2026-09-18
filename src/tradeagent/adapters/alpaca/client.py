@@ -39,5 +39,32 @@ class AlpacaClient:
         if self.creds is None:
             raise RuntimeError("ALPACA_CREDENTIALS_MISSING")
         r = self.http.get(f"{base or self.trading_url}{path}", params=params, headers=self.creds.headers)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise AlpacaHttpError(r.status_code, r.text[:500])
         return r.json()
+
+    def _request(
+        self, method: str, path: str, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None
+    ) -> Any:
+        if self.creds is None:
+            raise RuntimeError("ALPACA_CREDENTIALS_MISSING")
+        r = self.http.request(method, f"{self.trading_url}{path}", json=json, params=params, headers=self.creds.headers)
+        if r.status_code >= 400:
+            raise AlpacaHttpError(r.status_code, r.text[:500])
+        return r.json() if r.content else None
+
+    def post(self, path: str, json: dict[str, Any]) -> Any:
+        return self._request("POST", path, json=json)
+
+    def patch(self, path: str, json: dict[str, Any]) -> Any:
+        return self._request("PATCH", path, json=json)
+
+    def delete(self, path: str) -> Any:
+        return self._request("DELETE", path)
+
+
+class AlpacaHttpError(RuntimeError):
+    def __init__(self, status: int, body: str):
+        super().__init__(f"HTTP {status}: {body}")
+        self.status = status
+        self.body = body

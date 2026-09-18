@@ -73,6 +73,67 @@ def cmd_run(env: dict[str, str]) -> int:
     return 0
 
 
+def cmd_probe_fractional_stop(env: dict[str, str]) -> int:
+    """ADR-0013 empirical probe (OI-01): one fractional Day stop on the paper account, status sequence recorded, then cancelled.
+    Requires PAPER keys and --confirm; never runs in this codebase's LIVE (there is none)."""
+    import json
+    import time as _time
+
+    from tradeagent.adapters.alpaca.broker_paper import AlpacaPaperBroker
+    from tradeagent.adapters.alpaca.client import AlpacaClient, AlpacaHttpError
+
+    if env.get("TRADEAGENT_PROBE_CONFIRM") != "yes":
+        raise SystemExit("set TRADEAGENT_PROBE_CONFIRM=yes to submit one fractional stop order to the PAPER account")
+    creds = paper_credentials(env)
+    if creds is None:
+        raise SystemExit("ALPACA_PAPER_KEY/SECRET required")
+    client = AlpacaClient(creds)
+    broker = AlpacaPaperBroker(client)
+    symbol = env.get("TRADEAGENT_PROBE_SYMBOL", "AAPL")
+    # a fractional long must exist to sell against: buy 0.5 share notional-free market order first, then arm a far stop
+    trace: list[dict[str, object]] = []
+    try:
+        buy = client.post(
+            "/v2/orders",
+            {
+                "symbol": symbol,
+                "qty": "0.5",
+                "side": "buy",
+                "type": "market",
+                "time_in_force": "day",
+                "client_order_id": f"probe-buy-{int(_time.time())}",
+            },
+        )
+        trace.append({"step": "buy", "status": buy.get("status"), "id": buy.get("id")})
+        _time.sleep(3)
+        last = client.get(
+            "/v2/stocks/trades/latest", {"symbols": symbol, "feed": "iex"}, base="https://data.alpaca.markets"
+        )["trades"][symbol]["p"]
+        stop = client.post(
+            "/v2/orders",
+            {
+                "symbol": symbol,
+                "qty": "0.5",
+                "side": "sell",
+                "type": "stop",
+                "time_in_force": "day",
+                "stop_price": f"{float(last) * 0.5:.2f}",
+                "client_order_id": f"probe-stop-{int(_time.time())}",
+            },
+        )
+        trace.append({"step": "stop_submit", "status": stop.get("status"), "id": stop.get("id")})
+        for i in range(3):
+            _time.sleep(2)
+            st = asyncio.run(broker.order_by_broker_id(str(stop["id"])))
+            trace.append({"step": f"stop_status_{i}", "status": st.status_reason if st else None})
+        client.delete(f"/v2/orders/{stop['id']}")
+        trace.append({"step": "stop_cancel", "ok": True})
+    except AlpacaHttpError as exc:
+        trace.append({"step": "error", "status": exc.status, "body": exc.body})
+    print(json.dumps({"symbol": symbol, "trace": trace}, indent=2))
+    return 0
+
+
 def cmd_verify_projections(env: dict[str, str]) -> int:
     db = Database(connect(env["DATABASE_URL"]))
     rows = db.conn.execute("select id, name from portfolios").fetchall()
@@ -84,7 +145,7 @@ def cmd_verify_projections(env: dict[str, str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(prog="tradeagent")
-    parser.add_argument("command", choices=["boot-check", "run", "verify-projections"])
+    parser.add_argument("command", choices=["boot-check", "run", "verify-projections", "probe-fractional-stop"])
     args = parser.parse_args(argv)
     env = dict(os.environ)
     try:

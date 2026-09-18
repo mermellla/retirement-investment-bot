@@ -22,6 +22,10 @@ naked-window story changes.
 **Proposal.** Treat the fractional-trading page as authoritative and run the ADR-0013 empirical probe in Slice 3 with a
 single fractional Day stop on the paper account. Contingency if rejected: the risk desk restricts entries to whole-share
 lots (price ≤ position size), which at $500 means a ≤ $150 share price cap; §8.3 would then need a v2.4 line.
+**Status (2026-09-18).** The probe is built (`tradeagent probe-fractional-stop`, refuses to run without
+`TRADEAGENT_PROBE_CONFIRM=yes` and paper keys; buys 0.5 share, submits a far Day stop, polls its status, cancels, and
+prints the trace). It has not run because no paper keys were present in the development environment. Until it does,
+`StopArmer` submits fractional Day stops as designed and any broker rejection surfaces as a `stop_coverage` incident.
 **Decision needed:** none now; the owner is informed of the contingency.
 
 ### OI-02 — Extended-hours scope: the overnight session (underspecified) — **ACCEPTED (A-02)**

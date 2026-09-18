@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 from tradeagent.adapters.alpaca.broker_null import NullBroker
+from tradeagent.adapters.alpaca.broker_paper import AlpacaPaperBroker
 from tradeagent.adapters.alpaca.client import AlpacaClient, AlpacaCredentials
 from tradeagent.config import Settings
 from tradeagent.domain.enums import ExecutionMode
 from tradeagent.interfaces import Broker, LiveLockedOutError
-
-
-class PaperBrokerNotYetImplemented(NotImplementedError):
-    """AlpacaPaperBroker arrives in Slice 3."""
 
 
 def paper_credentials(env: dict[str, str]) -> AlpacaCredentials | None:
@@ -24,7 +21,9 @@ def make_broker(settings: Settings, env: dict[str, str]) -> Broker:
     mode = settings.risk.execution.execution_mode
     if mode == ExecutionMode.LIVE:
         raise LiveLockedOutError("LIVE is not enabled in this codebase (ADR-0020)")
+    creds = paper_credentials(env)
     if mode == ExecutionMode.DRY_RUN:
-        creds = paper_credentials(env)
         return NullBroker(AlpacaClient(creds) if creds else None)
-    raise PaperBrokerNotYetImplemented("PAPER execution arrives in Slice 3")
+    if creds is None:
+        raise RuntimeError("PAPER mode requires ALPACA_PAPER_KEY / ALPACA_PAPER_SECRET in the environment")
+    return AlpacaPaperBroker(AlpacaClient(creds))

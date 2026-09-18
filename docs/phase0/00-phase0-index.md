@@ -25,6 +25,13 @@ QB-1.0 rules, phase-change record) and the Python package skeleton (`pyproject.t
 - No credentials anywhere; no network calls in code or tests.
 - No LIVE path: refused by config, schema, and state machine (ADR-0020).
 
+## Slice 3 delivered (2026-09-18; paper probe pending)
+Paper broker gateway, §8.10 policy enforcement on every boot, §8.6 replay-or-halt reconciliation through the ledger,
+09:10 stop re-arm with 09:31/09:33 verification, corporate actions; see `07-implementation-sequence.md` row S3. 149
+tests, ruff, mypy --strict, detect-secrets clean. The ADR-0013 fractional Day-stop probe (`tradeagent
+probe-fractional-stop`, guarded by `TRADEAGENT_PROBE_CONFIRM=yes`) is built but has not run: no `ALPACA_PAPER_KEY/SECRET`
+were present. OI-01 stays open until it does.
+
 ## Slice 2 delivered (2026-09-17)
 Universe and scanner with Jev-judged catalysts (ADR-0023, A-10); see `07-implementation-sequence.md` row S2. 130 tests,
 ruff, mypy --strict, detect-secrets clean. Live scans need `ALPACA_PAPER_KEY/SECRET`, `EDGAR_USER_AGENT`, `FINNHUB_API_KEY`,

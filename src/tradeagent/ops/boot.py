@@ -3,8 +3,8 @@
   settings (LIVE refused) → schema current → exposure checks → experiment + portfolios + opening balances
   → version registries → phase drift (open or halt) → projection check → reconciliation (replay or halt) → open halts
 
-Every halt is recorded in `halts` and (Slice 4) emailed. Slice 1 delivers the spine; broker policy enforcement and
-event replay attach in Slice 3 where the paper broker exists."""
+Every halt is recorded in `halts` and (Slice 4) emailed. Slice 1 delivered the spine; Slice 3 attached broker policy
+enforcement (§8.10) and activity replay (§8.6) through the paper broker gateway."""
 
 from __future__ import annotations
 
@@ -18,7 +18,11 @@ from uuid import UUID
 import httpx
 
 from tradeagent.config import Settings
-from tradeagent.domain.enums import ExecutionMode, HaltScope, ReconcileResult
+from tradeagent.domain.enums import BrokerPolicyResult, ExecutionMode, HaltScope, ReconcileResult
+from tradeagent.domain.models import BrokerPolicy
+from tradeagent.execution.broker_policy import BrokerPolicyHalt, enforce_broker_policy
+from tradeagent.execution.reconcile import ReconcileReport, reconcile
+from tradeagent.fees import FeeSchedules
 from tradeagent.interfaces import Broker
 from tradeagent.ops.checks import CheckResult, check_data_api_exposure, ensure_private_bucket
 from tradeagent.persistence.db import Database, latest_migration_version
@@ -44,6 +48,7 @@ class BootReport:
     opening_balances_written: int
     checks: list[CheckResult] = field(default_factory=list)
     reconciliation: ReconcileResult = ReconcileResult.AGREE
+    replayed: int = 0
     notes: list[str] = field(default_factory=list)
 
 
@@ -82,25 +87,6 @@ def run_exposure_checks(env: dict[str, str], http: httpx.Client | None = None) -
                 {"check": r.name, "detail": r.detail},
             )
     return results
-
-
-async def reconcile_minimal(
-    db: Database, broker: Broker, experiment_id: UUID, mode: ExecutionMode
-) -> tuple[ReconcileResult, dict[str, Any]]:
-    """§8.6 steps 1, 3, 5 for Slice 1: no orders have ever been submitted, so any broker position or open order is
-    unexplained → halt. Event replay (steps 2, 4) attaches in Slice 3 with the paper broker."""
-    positions = await broker.positions()
-    open_orders = await broker.open_orders()
-    diff: dict[str, Any] = {
-        "broker_positions": [{"symbol": p.symbol, "qty": str(p.qty)} for p in positions],
-        "broker_open_orders": [o.client_order_id for o in open_orders],
-        "ledger_open_positions": 0,
-    }
-    result = ReconcileResult.HALT if positions or open_orders else ReconcileResult.AGREE
-    db.record_reconciliation(
-        experiment_id, mode, result, diff, "slice-1 minimal: broker must be flat before the first phase trades"
-    )
-    return result, diff
 
 
 def boot(
@@ -160,10 +146,27 @@ def boot(
                 if not db.verify_cash_chain(UUID(str(p["id"]))):
                     raise BootHalt("PROJECTION_DRIFT", HaltScope.ALL, {"portfolio": p["name"]})
 
-            result, diff = asyncio.run(reconcile_minimal(db, broker, experiment_id, mode))
-            db.record_reconciliation(
-                experiment_id, mode, result, diff, "slice-1 minimal: broker must be flat before the first phase trades"
-            )
+            policy_result: BrokerPolicyResult | None = None
+            rec = ReconcileReport(ReconcileResult.AGREE)
+            if mode == ExecutionMode.PAPER:
+                # §8.10 as amended: the five-field policy is verified (and, if allowed, written) on every boot
+                try:
+                    policy_result, _ = asyncio.run(
+                        enforce_broker_policy(
+                            db,
+                            broker,
+                            BrokerPolicy(),
+                            settings.risk.execution.broker_policy_enforce,
+                            experiment_id,
+                            mode,
+                        )
+                    )
+                except BrokerPolicyHalt as exc:
+                    raise BootHalt("BROKER_POLICY_HALT", exc.scope, exc.detail) from exc
+            # §8.6 replay-or-halt: replay broker activity into the ledger, then every broker position must be explained
+            fees = FeeSchedules.from_config(settings.fees, settings.versions.config_version)
+            rec = asyncio.run(reconcile(db, broker, experiment_id, mode, fees))
+            result, diff = rec.result, rec.diff()
             if result == ReconcileResult.HALT:
                 raise BootHalt("RECONCILE_HALT", HaltScope.ALL, diff, reconciliation=diff)
     except BootHalt as halt:
@@ -175,17 +178,25 @@ def boot(
                     mode,
                     ReconcileResult.HALT,
                     halt.reconciliation,
-                    "slice-1 minimal: unexplained broker state",
+                    "boot: unexplained broker state (§8.6)",
                 )
             db.record_halt(experiment_id, halt.code, halt.scope, halt.detail)
         raise
 
-    report = BootReport(experiment_id, phase_id, int(phase["seq"]), opened, len(portfolios), written, checks, result)
+    report = BootReport(
+        experiment_id, phase_id, int(phase["seq"]), opened, len(portfolios), written, checks, result, rec.replayed
+    )
     open_halts = db.open_halts(experiment_id)
     if open_halts:
         report.notes.append(
             f"{len(open_halts)} uncleared halt(s): {[h['code'] for h in open_halts]} — owner must clear before trading"
         )
     if mode == ExecutionMode.DRY_RUN:
-        report.notes.append("DRY_RUN: broker policy enforcement (§8.10) runs at PAPER initialization (Slice 3)")
+        report.notes.append(
+            "DRY_RUN: broker policy enforcement (§8.10) applies at PAPER initialization; protective orders are recorded, not submitted (§16)"
+        )
+    else:
+        report.notes.append(
+            f"broker policy: {policy_result.value if policy_result else 'n/a'}; reconciliation: {result.value} (replayed {rec.replayed})"
+        )
     return report
